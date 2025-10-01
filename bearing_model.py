@@ -221,3 +221,7 @@ cm = confusion_matrix(all_labels, all_preds)
 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
 disp.plot(cmap=plt.cm.Blues)
 plt.show()
+
+# Save model after training
+torch.save(model.state_dict(), "bearing_model.pth")
+print("Model saved as bearing_model.pth")
