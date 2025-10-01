@@ -1,6 +1,7 @@
 # -------------------------------
 # Bearing Condition Classifier
 # Full EDA + Training + Testing + Plots
+# Includes per-class accuracy & misclassified images
 # -------------------------------
 
 import os
@@ -21,6 +22,10 @@ data_dir = os.path.expanduser(
 )
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
+
+# Directory to save plots
+plot_dir = os.path.join(os.getcwd(), "plots")
+os.makedirs(plot_dir, exist_ok=True)
 
 # -------------------------------
 # Step 2: Data transforms
@@ -65,13 +70,15 @@ print("Class to idx mapping:", full_train_dataset.class_to_idx)
 # Class distribution
 train_targets = [s[1] for s in full_train_dataset.samples]
 counter = Counter(train_targets)
+plt.figure()
 plt.bar([class_names[i] for i in counter.keys()], counter.values())
 plt.title("Train Set Class Distribution")
+plt.savefig(os.path.join(plot_dir, "train_class_distribution.png"))
 plt.show()
-
+plt.close()
 
 # Sample images
-def imshow(inp, title=None):
+def imshow(inp, title=None, filename=None):
     inp = inp.numpy().transpose((1, 2, 0))
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
@@ -80,13 +87,15 @@ def imshow(inp, title=None):
     plt.imshow(inp)
     if title: plt.title(title)
     plt.axis('off')
+    if filename:
+        plt.savefig(os.path.join(plot_dir, filename))
     plt.show()
-
+    plt.close()
 
 shown = set()
 for img, label in full_train_dataset:
     if label not in shown:
-        imshow(img, title=f"Class: {class_names[label]}")
+        imshow(img, title=f"Class: {class_names[label]}", filename=f"class_{class_names[label]}.png")
         shown.add(label)
     if len(shown) == len(class_names):
         break
@@ -108,7 +117,6 @@ optimizer = optim.Adam(model.parameters(), lr=1e-4)
 train_losses = []
 val_accuracies = []
 
-
 def train_model(model, criterion, optimizer, train_loader, val_loader, epochs=20):
     best_acc = 0.0
     for epoch in range(epochs):
@@ -119,7 +127,6 @@ def train_model(model, criterion, optimizer, train_loader, val_loader, epochs=20
         running_loss, running_corrects = 0, 0
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
-
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, labels)
@@ -156,7 +163,6 @@ def train_model(model, criterion, optimizer, train_loader, val_loader, epochs=20
 
     print("Training complete. Best val acc:", best_acc.item())
 
-
 # Train the model
 train_model(model, criterion, optimizer, train_loader, val_loader, epochs=20)
 
@@ -170,7 +176,9 @@ plt.xlabel("Epoch")
 plt.ylabel("Value")
 plt.title("Training Progress")
 plt.legend()
+plt.savefig(os.path.join(plot_dir, "training_progress.png"))
 plt.show()
+plt.close()
 
 # -------------------------------
 # Step 8: Test evaluation
@@ -178,12 +186,28 @@ plt.show()
 model.load_state_dict(torch.load("best_model.pth"))
 model.eval()
 correct = 0
+all_preds = []
+all_labels = []
+misclassified_images = []
+misclassified_labels = []
+misclassified_preds = []
+
 with torch.no_grad():
     for inputs, labels in test_loader:
         inputs, labels = inputs.to(device), labels.to(device)
         outputs = model(inputs)
         _, preds = torch.max(outputs, 1)
         correct += torch.sum(preds == labels.data)
+
+        # Collect for analysis
+        all_preds.extend(preds.cpu().numpy())
+        all_labels.extend(labels.cpu().numpy())
+
+        # Misclassified
+        mis_mask = preds != labels
+        misclassified_images.extend(inputs[mis_mask].cpu())
+        misclassified_labels.extend(labels[mis_mask].cpu())
+        misclassified_preds.extend(preds[mis_mask].cpu())
 
 print("Test Accuracy:", correct.double() / len(test_dataset))
 
@@ -192,36 +216,56 @@ print("Test Accuracy:", correct.double() / len(test_dataset))
 # -------------------------------
 images, labels = next(iter(test_loader))
 images, labels = images[:5], labels[:5]
-
 outputs = model(images.to(device))
 _, preds = torch.max(outputs, 1)
-
 images = images.cpu()
 preds = preds.cpu()
 labels = labels.cpu()
 
 for i in range(5):
-    imshow(images[i], title=f"True: {class_names[labels[i]]}, Pred: {class_names[preds[i]]}")
+    imshow(images[i], title=f"True: {class_names[labels[i]]}, Pred: {class_names[preds[i]]}", filename=f"sample_pred_{i}.png")
 
 # -------------------------------
 # Step 10: Confusion matrix
 # -------------------------------
-all_preds = []
-all_labels = []
-
-with torch.no_grad():
-    for inputs, labels in test_loader:
-        inputs, labels = inputs.to(device), labels.to(device)
-        outputs = model(inputs)
-        _, preds = torch.max(outputs, 1)
-        all_preds.extend(preds.cpu().numpy())
-        all_labels.extend(labels.cpu().numpy())
-
 cm = confusion_matrix(all_labels, all_preds)
 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
 disp.plot(cmap=plt.cm.Blues)
+plt.title("Confusion Matrix")
+plt.savefig(os.path.join(plot_dir, "confusion_matrix.png"))
 plt.show()
+plt.close()
+
+# -------------------------------
+# Step 11: Per-class accuracy plot
+# -------------------------------
+class_correct = [0]*len(class_names)
+class_total = [0]*len(class_names)
+
+for label, pred in zip(all_labels, all_preds):
+    class_total[label] += 1
+    if label == pred:
+        class_correct[label] += 1
+
+per_class_acc = [c/t if t>0 else 0 for c, t in zip(class_correct, class_total)]
+plt.figure()
+plt.bar(class_names, per_class_acc)
+plt.ylim([0, 1])
+plt.title("Per-Class Accuracy")
+plt.ylabel("Accuracy")
+plt.savefig(os.path.join(plot_dir, "per_class_accuracy.png"))
+plt.show()
+plt.close()
+
+# -------------------------------
+# Step 12: Visualize misclassified samples
+# -------------------------------
+num_to_show = min(10, len(misclassified_images))
+for i in range(num_to_show):
+    imshow(
+        misclassified_images[i],
+        title=f"True: {class_names[misclassified_labels[i]]}, Pred: {class_names[misclassified_preds[i]]}",
+        filename=f"misclassified_{i}.png"
+    )
 
 # Save model after training
-torch.save(model.state_dict(), "bearing_model.pth")
-print("Model saved as bearing_model.pth")
